@@ -67,7 +67,7 @@ public:
 
     uintptr_t GetNamesPtr() const override
     {
-        std::string pattern = "F4 4F 01 A9 FD 7B 02 A9 FD 83 00 91 ? ? ? ? A8 02 ? 39";
+          std::string pattern = "?? ?? ?? D0 F4 03 02 2A ?? ?? ?? 91";
 
         PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
 
