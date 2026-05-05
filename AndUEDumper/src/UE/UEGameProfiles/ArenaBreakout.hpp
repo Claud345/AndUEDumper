@@ -11,7 +11,6 @@ public:
     bool ArchSupprted() const override
     {
         auto e_machine = GetUnrealELF().header().e_machine;
-        // only arm64
         return e_machine == EM_AARCH64;
     }
 
@@ -43,12 +42,18 @@ public:
     uintptr_t GetGUObjectArrayPtr() const override
     {
         std::vector<std::pair<std::string, int>> idaPatterns = {
-            {"91 E1 03 ? AA E0 03 08 AA E2 03 1F 2A", -7},
-            {"B4 21 0C 40 B9 ? ? ? ? ? ? ? 91", 5},
-            {"9F E5 00 ? 00 E3 FF ? 40 E3 ? ? A0 E1", -2},
-            {"96 df 02 17 ? ? ? ? 54 ? ? ? ? ? ? ? 91 e1 03 13 aa", 9},
-            {"f4 03 01 2a ? 00 00 34 ? ? ? ? ? ? ? ? ? ? 00 54 ? 00 00 14 ? ? ? ? ? ? ? 91", 0x18},
-            {"69 3e 40 b9 1f 01 09 6b ? ? ? 54 e1 03 13 aa ? ? ? ? f4 4f ? a9 ? ? ? ? ? ? ? 91", 0x18},
+            // CMP W8,#0 / LDR X10,[X10,#off_DDBBA68@PAGEOFF] / CSEL / ASR W11,W9,#0x10
+            {"1F 01 00 71 4A ?? ?? F9 29 B1 88 1A 2B 7D 10 13", -12},
+            // ASR #0x10 / AND #FFFF0000 / SUB / MOV #0x18 / LDR [X10,#ObjObjects] / LDR [X10,#?]
+            {"2B 7D 10 13 29 3D 10 12 08 01 09 4B 09 03 80 52 4A ?? ?? F9 4A ?? ?? F8", -32},
+            // LDR-W8,[X2,#0xC] / ADRP / MOV#FFFF / ADD / CMP / LDR-guobjectarray
+            {"48 0C 40 B9 4A ?? ?? F0 E9 FF 9F 52 09 01 09 0B 1F 01 00 71 4A ?? ?? F9", 4},
+            // MOV #0x18 / LDR ObjObjects / LDR entry
+            {"09 03 80 52 4A ?? ?? F9 4A ?? ?? F8 1F 20 03 D5 08 29 29 9B", -36},
+            // LDR from pointer table with ASR+AND object index resolution
+            {"4A ?? ?? F9 29 B1 88 1A 2B 7D 10 13 29 3D 10 12 08 01 09 4B", -20},
+            // MOV #0x18 (24-byte object stride) + LDR obj ptr + LDR entry
+            {"09 03 80 52 4A ?? ?? F9 4A ?? ?? F8", -36},
         };
 
         PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
@@ -67,36 +72,32 @@ public:
 
     uintptr_t GetNamesPtr() const override
     {
-          std::string pattern = "?? ?? ?? D0 F4 03 02 2A ?? ?? ?? 91";
+        std::vector<std::pair<std::string, int>> idaPatterns = {
+            // sub_6341A70: STP / ADRP X8 / LDR X21 / CBZ / ADD X20,X21,#0x20
+            {"F4 4F 02 A9 28 ?? ?? B0 15 ?? ?? F9 75 06 00 B4 B4 82 00 91", 4},
+            // sub_63438A8 / sub_6343D0C: MRS / ADRP X10 / LDR X9 / MOV X19,X8 / STR
+            {"56 D0 3B D5 0A ?? ?? F0 C9 16 40 F9 F3 03 08 AA", 4},
+            // sub_6348E18: STP / ADRP X21 / LDR X8 / CBZ
+            {"F4 4F 05 A9 F5 ?? ?? D0 A8 06 46 F9 E8 07 00 B4", 4},
+            // sub_710A8B4 (wrapper): ADRP X8 / LDR X8 / CBZ
+            {"E8 ?? ?? 90 08 ?? ?? F9 A8 00 00 B4", 0},
+            // sub_710A8B4 full: RET / ADRP X8 / LDR X8 / CBZ
+            {"C0 03 5F D6 E8 ?? ?? 90 08 ?? ?? F9 A8 00 00 B4", 4},
+            // 0x712861c: MRS / ADRP X27 / LDR X8 / STUR
+            {"5A D0 3B D5 FB ?? ?? D0 48 17 40 F9 A8 83 1F F8", 4},
+            // sub_7FD1ACC: BLR / ADRP X22 / LDR X0 / CBZ / ADD
+            {"20 01 3F D6 B6 ?? ?? B0 C0 ?? ?? F9 80 00 00 B4 E2 23 00 91", 4},
+        };
 
         PATTERN_MAP_TYPE map_type = isEmulator() ? PATTERN_MAP_TYPE::ANY_R : PATTERN_MAP_TYPE::ANY_X;
 
-        uintptr_t find = findIdaPattern(map_type, pattern, 0);
-        if (find != 0)
+        for (const auto &it : idaPatterns)
         {
-            bool skippedFirst = false;
-            intptr_t adrp_adr = 0;
-            for (int i = 0; i < 8; i++)
-            {
-                uint32_t insn = vm_rpm_ptr<uint32_t>((void*)(find + (i * 4)));
-                if (KittyArm64::decodeInsnType(insn) != EKittyInsnTypeArm64::ADRP)
-                    continue;
+            std::string ida_pattern = it.first;
+            const int step = it.second;
 
-                if (!skippedFirst)
-                {
-                    skippedFirst = true;
-                    continue;
-                }
-
-                adrp_adr = find + (i * 4);
-                break;
-            }
-
-            if (adrp_adr != 0)
-            {
-                // 0 so the it scans for next imm instruction offset
-                return Arm64::DecodeADRL(adrp_adr, 0);
-            }
+            uintptr_t adrl = Arm64::DecodeADRL(findIdaPattern(map_type, ida_pattern, step));
+            if (adrl != 0) return adrl;
         }
 
         return 0;
